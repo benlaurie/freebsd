@@ -54,6 +54,8 @@
 #include <math.h>
 #include <errno.h>
 #include <ctype.h>
+#include <sys/capability.h>
+#include <sys/wait.h>
 #include "bzlib.h"
 
 #define ERROR_IF_EOF(i)       { if ((i) == EOF)  ioError(); }
@@ -345,6 +347,9 @@ void compressStream ( FILE *stream, FILE *zStream )
                            blockSize100k, verbosity, workFactor );   
    if (bzerr != BZ_OK) goto errhandler;
 
+   if(cap_enter() < 0)
+      panic("cap_enter() failed");
+    
    if (verbosity >= 2) fprintf ( stderr, "\n" );
 
    while (True) {
@@ -426,7 +431,54 @@ void compressStream ( FILE *stream, FILE *zStream )
    /*notreached*/
 }
 
+static int
+lc_limitfd(int fd, cap_rights_t rights)
+{
+  int fd_cap;
+  int error;
+  
+  fd_cap = cap_new(fd, rights);
+  if (fd_cap < 0)
+    return (-1);
+  if (dup2(fd_cap, fd) < 0) {
+    error = errno;
+    close(fd_cap);
+    errno = error;
+    return (-1);
+  }
+  close(fd_cap);
+  return (0);
+}
 
+static void
+compressStream_Host ( FILE *stream, FILE *zStream ) {
+  int ifd,  ofd, pid, status;
+  
+  ifd = fileno(stream);
+  ofd = fileno(zStream);
+
+  if((pid = fork()) < 0)
+    panic("Cannot fork");
+  if(pid != 0) {
+    /* Parent process */
+    wait(&status);
+    if(WIFEXITED(status)) {
+      status = WEXITSTATUS(status);
+      if(status)
+	exit(status);
+    } else {
+      panic("Child exited abnormally");
+    }
+  } else { 
+    /* Child process */
+    if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
+       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT | CAP_FCHMOD | CAP_FCHOWN) < 0) {
+      perror("Cannot limit descriptors");
+    }
+    compressStream(stream, zStream);
+    exit(0);
+  }
+}
 
 /*---------------------------------------------*/
 static 
@@ -449,6 +501,8 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
    if (ferror(stream)) goto errhandler_io;
    if (ferror(zStream)) goto errhandler_io;
 
+   if(cap_enter() < 0)
+     panic("cap_enter() failed");   
    while (True) {
 
       bzf = BZ2_bzReadOpen ( 
@@ -546,6 +600,41 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
 
    panic ( "decompress:end" );
    return True; /*notreached*/
+}
+
+static 
+Bool uncompressStream_Host ( FILE *zStream, FILE *stream ) {
+  int ifd,  ofd, pid, status;
+  
+  ofd = fileno(stream);
+  ifd = fileno(zStream);
+
+  if((pid = fork()) < 0)
+    panic("Cannot fork");
+
+  if(pid != 0) {
+    /* Parent process */
+    wait(&status);
+    if(WIFEXITED(status)) {
+      status = WEXITSTATUS(status);
+      return status > 0 ? False : True;
+    } else {
+      panic("Child exited abnormally");
+    }
+  } else { 
+    /* Child process */
+    if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
+       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT | CAP_FCHMOD | CAP_FCHOWN) < 0) {
+      perror("Cannot limit descriptors");
+    }
+    if(uncompressStream(zStream, stream) == True) {
+      exit(0);
+    } else {
+      exit(130);
+    }
+    /* NOTREACHED */
+  }
+  /* NOTREACHED */
 }
 
 
@@ -1292,7 +1381,7 @@ void compress ( Char *name )
    /*--- Now the input and output handles are sane.  Do the Biz. ---*/
    outputHandleJustInCase = outStr;
    deleteOutputOnInterrupt = True;
-   compressStream ( inStr, outStr );
+   compressStream_Host ( inStr, outStr );
    outputHandleJustInCase = NULL;
 
    /*--- If there was an I/O error, we won't get here. ---*/
@@ -1469,7 +1558,7 @@ void uncompress ( Char *name )
    /*--- Now the input and output handles are sane.  Do the Biz. ---*/
    outputHandleJustInCase = outStr;
    deleteOutputOnInterrupt = True;
-   magicNumberOK = uncompressStream ( inStr, outStr );
+   magicNumberOK = uncompressStream_Host ( inStr, outStr );
    outputHandleJustInCase = NULL;
 
    /*--- If there was an I/O error, we won't get here. ---*/
