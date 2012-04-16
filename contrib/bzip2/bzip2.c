@@ -373,7 +373,6 @@ void compressStream ( FILE *stream, FILE *zStream )
    if (zStream != stdout) {
       Int32 fd = fileno ( zStream );
       if (fd < 0) goto errhandler_io;
-      applySavedFileAttrToOutputFile ( fd );
       ret = fclose ( zStream );
       outputHandleJustInCase = NULL;
       if (ret == EOF) goto errhandler_io;
@@ -472,10 +471,13 @@ compressStream_Host ( FILE *stream, FILE *zStream ) {
   } else { 
     /* Child process */
     if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
-       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT | CAP_FCHMOD | CAP_FCHOWN) < 0) {
+       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT) < 0) {
       perror("Cannot limit descriptors");
     }
     compressStream(stream, zStream);
+    if(ofd != STDOUT_FILENO)
+      applySavedFileAttrToOutputFile(ofd);
+
     exit(0);
   }
 }
@@ -538,7 +540,6 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
    if (stream != stdout) {
       Int32 fd = fileno ( stream );
       if (fd < 0) goto errhandler_io;
-      applySavedFileAttrToOutputFile ( fd );
    }
    ret = fclose ( zStream );
    if (ret == EOF) goto errhandler_io;
@@ -624,10 +625,12 @@ Bool uncompressStream_Host ( FILE *zStream, FILE *stream ) {
   } else { 
     /* Child process */
     if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
-       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT | CAP_FCHMOD | CAP_FCHOWN) < 0) {
+       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT) < 0) {
       perror("Cannot limit descriptors");
     }
     if(uncompressStream(zStream, stream) == True) {
+      if(ofd != STDOUT_FILENO)
+	applySavedFileAttrToOutputFile(ofd);
       exit(0);
     } else {
       exit(130);
