@@ -468,6 +468,9 @@ compressStream_Host ( FILE *stream, FILE *zStream ) {
     } else {
       panic("Child exited abnormally");
     }
+    if(ofd != STDOUT_FILENO)
+      applySavedFileAttrToOutputFile(ofd);
+
   } else { 
     /* Child process */
     if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
@@ -475,9 +478,6 @@ compressStream_Host ( FILE *stream, FILE *zStream ) {
       perror("Cannot limit descriptors");
     }
     compressStream(stream, zStream);
-    if(ofd != STDOUT_FILENO)
-      applySavedFileAttrToOutputFile(ofd);
-
     exit(0);
   }
 }
@@ -622,6 +622,9 @@ Bool uncompressStream_Host ( FILE *zStream, FILE *stream ) {
     } else {
       panic("Child exited abnormally");
     }
+    if(ofd != STDOUT_FILENO)
+      applySavedFileAttrToOutputFile(ofd);
+
   } else { 
     /* Child process */
     if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
@@ -629,8 +632,6 @@ Bool uncompressStream_Host ( FILE *zStream, FILE *stream ) {
       perror("Cannot limit descriptors");
     }
     if(uncompressStream(zStream, stream) == True) {
-      if(ofd != STDOUT_FILENO)
-	applySavedFileAttrToOutputFile(ofd);
       exit(0);
     } else {
       exit(130);
