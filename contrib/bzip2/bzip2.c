@@ -310,6 +310,24 @@ void uInt64_toAscii ( char* outbuf, UInt64* n )
       outbuf[i] = buf[nBuf-i-1];
 }
 
+/* Capability functions */
+
+static
+Bool cap_available(void)
+{
+   static Bool known;
+   static Bool available;
+
+   if (!known) {
+      known = True;
+      cap_rights_t rights;
+      if (cap_getrights(0, &rights) == 0 || errno != ENOSYS)
+	 available = True;
+   }
+   return available;
+}
+   
+
 
 /*---------------------------------------------------*/
 /*--- Processing of complete files and streams    ---*/
@@ -347,9 +365,12 @@ void compressStream ( FILE *stream, FILE *zStream )
                            blockSize100k, verbosity, workFactor );   
    if (bzerr != BZ_OK) goto errhandler;
 
-   if(cap_enter() < 0)
+   // FIXME: Surely can do this earlier?
+   if (cap_available() && cap_enter() < 0) {
+      perror("cap_enter");
       panic("cap_enter() failed");
-    
+   }
+
    if (verbosity >= 2) fprintf ( stderr, "\n" );
 
    while (True) {
@@ -373,6 +394,9 @@ void compressStream ( FILE *stream, FILE *zStream )
    if (zStream != stdout) {
       Int32 fd = fileno ( zStream );
       if (fd < 0) goto errhandler_io;
+      // In caps mode, this is done by the parent.
+      if (!cap_available())
+	 applySavedFileAttrToOutputFile( fd );
       ret = fclose ( zStream );
       outputHandleJustInCase = NULL;
       if (ret == EOF) goto errhandler_io;
@@ -452,6 +476,11 @@ lc_limitfd(int fd, cap_rights_t rights)
 static void
 compressStream_Host ( FILE *stream, FILE *zStream ) {
   int ifd,  ofd, pid, status;
+
+  if (!cap_available()) {
+     compressStream( stream, zStream );
+     return;
+  }
   
   ifd = fileno(stream);
   ofd = fileno(zStream);
@@ -503,8 +532,9 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
    if (ferror(stream)) goto errhandler_io;
    if (ferror(zStream)) goto errhandler_io;
 
-   if(cap_enter() < 0)
-     panic("cap_enter() failed");   
+   if(cap_available() && cap_enter() < 0)
+     panic("cap_enter() failed");
+
    while (True) {
 
       bzf = BZ2_bzReadOpen ( 
@@ -540,6 +570,9 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
    if (stream != stdout) {
       Int32 fd = fileno ( stream );
       if (fd < 0) goto errhandler_io;
+      // In caps mode this is done in the parent.
+      if (!cap_available())
+	 applySavedFileAttrToOutputFile( fd );
    }
    ret = fclose ( zStream );
    if (ret == EOF) goto errhandler_io;
@@ -606,6 +639,9 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
 static 
 Bool uncompressStream_Host ( FILE *zStream, FILE *stream ) {
   int ifd,  ofd, pid, status;
+
+  if (!cap_available())
+     return uncompressStream( zStream, stream );
   
   ofd = fileno(stream);
   ifd = fileno(zStream);
