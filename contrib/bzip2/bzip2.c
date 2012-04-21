@@ -55,6 +55,7 @@
 #include <errno.h>
 #include <ctype.h>
 #include <sys/capability.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include "bzlib.h"
 
@@ -326,7 +327,28 @@ Bool cap_available(void)
    }
    return available;
 }
-   
+
+static
+void cap_closeallbut(const int *fds, const int nfds) {
+  struct rlimit rl;
+  int fd;
+  int n;
+
+  if (getrlimit(RLIMIT_NOFILE, &rl) < 0)
+    panic("Can't getrlimit");
+
+  for (fd = 0; fd < rl.rlim_max; ++fd) {
+    for (n = 0; n < nfds; ++n)
+      if (fds[n] == fd)
+	goto next;
+    if (close(fd) < 0 && errno != EBADF) {
+      perror("close");
+      panic("Can't close");
+    }
+  next:
+    continue;
+  }
+}   
 
 /*---------------------------------------------------*/
 /*--- Processing of complete files and streams    ---*/
@@ -500,11 +522,16 @@ compressStream_Host ( FILE *stream, FILE *zStream ) {
       applySavedFileAttrToOutputFile(ofd);
 
   } else { 
+    int fds[3];
     /* Child process */
     if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
        || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT) < 0) {
       panic("Cannot limit descriptors");
     }
+    fds[0] = 2;
+    fds[1] = ifd;
+    fds[2] = ofd;
+    cap_closeallbut(fds, 3);
     compressStream(stream, zStream);
     exit(0);
   }
@@ -661,11 +688,16 @@ Bool uncompressStream_Host ( FILE *zStream, FILE *stream ) {
       applySavedFileAttrToOutputFile(ofd);
 
   } else { 
+    int fds[3];
     /* Child process */
     if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
        || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT) < 0) {
       panic("Cannot limit descriptors");
     }
+    fds[0] = 2;
+    fds[1] = ofd;
+    fds[2] = ifd;
+    cap_closeallbut(fds, 3);
     if(uncompressStream(zStream, stream) == True) {
       exit(0);
     } else {
