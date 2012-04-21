@@ -503,7 +503,7 @@ compressStream_Host ( FILE *stream, FILE *zStream ) {
     /* Child process */
     if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
        || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT) < 0) {
-      perror("Cannot limit descriptors");
+      panic("Cannot limit descriptors");
     }
     compressStream(stream, zStream);
     exit(0);
@@ -664,7 +664,7 @@ Bool uncompressStream_Host ( FILE *zStream, FILE *stream ) {
     /* Child process */
     if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
        || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT) < 0) {
-      perror("Cannot limit descriptors");
+      panic("Cannot limit descriptors");
     }
     if(uncompressStream(zStream, stream) == True) {
       exit(0);
