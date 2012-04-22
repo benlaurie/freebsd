@@ -369,6 +369,9 @@ lc_limitfd(int fd, cap_rights_t rights)
   return (0);
 }
 
+// FIXME: do this some other way, since we can't stop the child from
+// using our code.
+#define FILTER_EXIT  123
 static 
 Bool lc_wrap_filter(Bool (*func)(FILE *in, FILE *out), FILE *in, FILE *out) {
   int ifd,  ofd, pid, status;
@@ -384,7 +387,7 @@ Bool lc_wrap_filter(Bool (*func)(FILE *in, FILE *out), FILE *in, FILE *out) {
     wait(&status);
     if(WIFEXITED(status)) {
       status = WEXITSTATUS(status);
-      if (status != 0 && status != 1)
+      if (status != 0 && status != FILTER_EXIT)
 	panic("Unexpected child status");
       return status == 0;
     } else {
@@ -404,7 +407,7 @@ Bool lc_wrap_filter(Bool (*func)(FILE *in, FILE *out), FILE *in, FILE *out) {
     if((*func)(in, out) == True) {
       exit(0);
     } else {
-      exit(1);
+      exit(FILTER_EXIT);
     }
     /* NOTREACHED */
   }
