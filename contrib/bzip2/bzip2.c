@@ -369,6 +369,48 @@ lc_limitfd(int fd, cap_rights_t rights)
   return (0);
 }
 
+static 
+Bool lc_wrap_filter(Bool (*func)(FILE *in, FILE *out), FILE *in, FILE *out) {
+  int ifd,  ofd, pid, status;
+
+  ifd = fileno(in);
+  ofd = fileno(out);
+
+  if((pid = fork()) < 0)
+    panic("Cannot fork");
+
+  if(pid != 0) {
+    /* Parent process */
+    wait(&status);
+    if(WIFEXITED(status)) {
+      status = WEXITSTATUS(status);
+      if (status != 0 && status != 1)
+	panic("Unexpected child status");
+      return status == 0;
+    } else {
+      panic("Child exited abnormally");
+    }
+  } else { 
+    int fds[3];
+    /* Child process */
+    if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
+       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT) < 0) {
+      panic("Cannot limit descriptors");
+    }
+    fds[0] = 2;
+    fds[1] = ofd;
+    fds[2] = ifd;
+    lc_closeallbut(fds, 3);
+    if((*func)(in, out) == True) {
+      exit(0);
+    } else {
+      exit(1);
+    }
+    /* NOTREACHED */
+  }
+  /* NOTREACHED */
+}
+
 /*---------------------------------------------------*/
 /*--- Processing of complete files and streams    ---*/
 /*---------------------------------------------------*/
@@ -386,7 +428,7 @@ Bool myfeof ( FILE* f )
 
 /*---------------------------------------------*/
 static 
-void compressStream ( FILE *stream, FILE *zStream )
+Bool compressStream ( FILE *stream, FILE *zStream )
 {
    BZFILE* bzf = NULL;
    UChar   ibuf[5000];
@@ -472,7 +514,7 @@ void compressStream ( FILE *stream, FILE *zStream )
       }
    }
 
-   return;
+   return True;
 
    errhandler:
    BZ2_bzWriteClose64 ( &bzerr_dummy, bzf, 1, 
@@ -496,44 +538,19 @@ void compressStream ( FILE *stream, FILE *zStream )
 
 static void
 compressStream_Host ( FILE *stream, FILE *zStream ) {
-  int ifd,  ofd, pid, status;
-
   if (!lc_available()) {
      compressStream( stream, zStream );
      return;
   }
-  
-  ifd = fileno(stream);
-  ofd = fileno(zStream);
 
-  if((pid = fork()) < 0)
-    panic("Cannot fork");
-  if(pid != 0) {
-    /* Parent process */
-    wait(&status);
-    if(WIFEXITED(status)) {
-      status = WEXITSTATUS(status);
-      if(status)
-	exit(status);
-    } else {
-      panic("Child exited abnormally");
-    }
-    if(ofd != STDOUT_FILENO)
-      applySavedFileAttrToOutputFile(ofd);
-
-  } else { 
-    int fds[3];
-    /* Child process */
-    if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
-       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT) < 0) {
-      panic("Cannot limit descriptors");
-    }
-    fds[0] = 2;
-    fds[1] = ifd;
-    fds[2] = ofd;
-    lc_closeallbut(fds, 3);
-    compressStream(stream, zStream);
-    exit(0);
+  Bool ret = lc_wrap_filter(compressStream, stream, zStream);
+  if (ret && zStream != stdout) {
+    Int32 fd = fileno ( zStream );
+    if (fd < 0)
+      panic ( "fileno" );
+    applySavedFileAttrToOutputFile ( fd );
+    if (fclose ( zStream ) < 0)
+      panic ( "fclose" );
   }
 }
 
@@ -664,50 +681,20 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
 
 static 
 Bool uncompressStream_Host ( FILE *zStream, FILE *stream ) {
-  int ifd,  ofd, pid, status;
-
   if (!lc_available())
      return uncompressStream( zStream, stream );
-  
-  ofd = fileno(stream);
-  ifd = fileno(zStream);
 
-  if((pid = fork()) < 0)
-    panic("Cannot fork");
-
-  if(pid != 0) {
-    /* Parent process */
-    wait(&status);
-    if(WIFEXITED(status)) {
-      status = WEXITSTATUS(status);
-      return status > 0 ? False : True;
-    } else {
-      panic("Child exited abnormally");
-    }
-    if(ofd != STDOUT_FILENO)
-      applySavedFileAttrToOutputFile(ofd);
-
-  } else { 
-    int fds[3];
-    /* Child process */
-    if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
-       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT) < 0) {
-      panic("Cannot limit descriptors");
-    }
-    fds[0] = 2;
-    fds[1] = ofd;
-    fds[2] = ifd;
-    lc_closeallbut(fds, 3);
-    if(uncompressStream(zStream, stream) == True) {
-      exit(0);
-    } else {
-      exit(130);
-    }
-    /* NOTREACHED */
+  Bool ret = lc_wrap_filter ( uncompressStream, zStream, stream );
+  if (ret && stream != stdout) {
+    Int32 fd = fileno ( stream );
+    if (fd < 0)
+      panic ( "fileno" );
+    applySavedFileAttrToOutputFile ( fd );
+    if (fclose ( stream ) < 0)
+      panic ( "fclose" );
   }
-  /* NOTREACHED */
+  return ret;
 }
-
 
 /*---------------------------------------------*/
 static 
