@@ -396,8 +396,8 @@ Bool lc_wrap_filter(Bool (*func)(FILE *in, FILE *out), FILE *in, FILE *out) {
   } else { 
     int fds[3];
     /* Child process */
-    if(lc_limitfd(ifd, CAP_READ | CAP_SEEK | CAP_FSTAT) < 0
-       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK | CAP_FSTAT) < 0) {
+    if(lc_limitfd(ifd, CAP_READ | CAP_SEEK) < 0
+       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK) < 0) {
       panic("Cannot limit descriptors");
     }
     fds[0] = 2;
