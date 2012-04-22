@@ -350,6 +350,25 @@ void lc_closeallbut(const int *fds, const int nfds) {
   }
 }   
 
+static int
+lc_limitfd(int fd, cap_rights_t rights)
+{
+  int fd_cap;
+  int error;
+  
+  fd_cap = cap_new(fd, rights);
+  if (fd_cap < 0)
+    return (-1);
+  if (dup2(fd_cap, fd) < 0) {
+    error = errno;
+    close(fd_cap);
+    errno = error;
+    return (-1);
+  }
+  close(fd_cap);
+  return (0);
+}
+
 /*---------------------------------------------------*/
 /*--- Processing of complete files and streams    ---*/
 /*---------------------------------------------------*/
@@ -473,25 +492,6 @@ void compressStream ( FILE *stream, FILE *zStream )
 
    panic ( "compress:end" );
    /*notreached*/
-}
-
-static int
-lc_limitfd(int fd, cap_rights_t rights)
-{
-  int fd_cap;
-  int error;
-  
-  fd_cap = cap_new(fd, rights);
-  if (fd_cap < 0)
-    return (-1);
-  if (dup2(fd_cap, fd) < 0) {
-    error = errno;
-    close(fd_cap);
-    errno = error;
-    return (-1);
-  }
-  close(fd_cap);
-  return (0);
 }
 
 static void
