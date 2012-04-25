@@ -17,6 +17,141 @@
    in the file LICENSE.
    ------------------------------------------------------------------ */
 
+/* START OF WRAPPED CODE */
+#include <assert.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/capability.h>
+#include <sys/resource.h>
+
+/* Capability functions */
+
+static
+int lc_available(void)
+{
+   static int known;
+   static int available;
+
+   if (!known) {
+      known = 1;
+      cap_rights_t rights;
+      if (cap_getrights(0, &rights) == 0 || errno != ENOSYS)
+	 available = 1;
+   }
+   return available;
+}
+
+static int lc_wrapped;
+static int lc_is_wrapped(void) { return lc_wrapped; }
+
+static void lc_send_to_parent(const char * const function, const char *fmt,
+			      ...) {
+  assert(lc_is_wrapped());
+  assert(!"Implement me");
+}
+
+static void lc_panic(const char * const msg) {
+  if (lc_is_wrapped()) {
+    lc_send_to_parent("panic", "int string", errno, msg);
+    exit(0);
+  }
+  fprintf(stderr, "lc_panic: %s\n", msg);
+  perror("lc_panic");
+  exit(1);
+}
+
+static
+void lc_closeallbut(const int *fds, const int nfds) {
+  struct rlimit rl;
+  int fd;
+  int n;
+
+  if (getrlimit(RLIMIT_NOFILE, &rl) < 0)
+    lc_panic("Can't getrlimit");
+
+  for (fd = 0; fd < rl.rlim_max; ++fd) {
+    for (n = 0; n < nfds; ++n)
+      if (fds[n] == fd)
+	goto next;
+    if (close(fd) < 0 && errno != EBADF) {
+      lc_panic("Can't close");
+    }
+  next:
+    continue;
+  }
+}   
+
+static int
+lc_limitfd(int fd, cap_rights_t rights)
+{
+  int fd_cap;
+  int error;
+  
+  fd_cap = cap_new(fd, rights);
+  if (fd_cap < 0)
+    return -1;
+  if (dup2(fd_cap, fd) < 0) {
+    error = errno;
+    close(fd_cap);
+    errno = error;
+    return -1;
+  }
+  close(fd_cap);
+  return 0;
+}
+
+// FIXME: do this some other way, since we can't stop the child from
+// using our code.
+#define FILTER_EXIT  123
+static 
+int lc_wrap_filter(int (*func)(FILE *in, FILE *out), FILE *in, FILE *out) {
+  int ifd,  ofd, pid, status;
+
+  ifd = fileno(in);
+  ofd = fileno(out);
+
+  if((pid = fork()) < 0)
+    lc_panic("Cannot fork");
+
+  if(pid != 0) {
+    /* Parent process */
+    wait(&status);
+    if(WIFEXITED(status)) {
+      status = WEXITSTATUS(status);
+      if (status != 0 && status != FILTER_EXIT)
+	lc_panic("Unexpected child status");
+      return status == 0;
+    } else {
+      lc_panic("Child exited abnormally");
+    }
+  } else { 
+    /* Child process */
+    int fds[3];
+
+    lc_wrapped = 1;
+    if(lc_limitfd(ifd, CAP_READ | CAP_SEEK) < 0
+       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK) < 0) {
+      lc_panic("Cannot limit descriptors");
+    }
+    fds[0] = 2;
+    fds[1] = ofd;
+    fds[2] = ifd;
+    lc_closeallbut(fds, 3);
+    if((*func)(in, out)) {
+      exit(0);
+    } else {
+      exit(FILTER_EXIT);
+    }
+    /* NOTREACHED */
+  }
+  /* NOTREACHED */
+  return 0;
+}
+
+/* End of capability functions */
 
 /* Place a 1 beside your platform, and 0 elsewhere.
    Generic 32-bit Unix.
@@ -47,21 +182,15 @@
   Some stuff for all platforms.
 --*/
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <signal.h>
 #include <math.h>
-#include <errno.h>
 #include <ctype.h>
-#include <sys/capability.h>
-#include <sys/resource.h>
-#include <sys/wait.h>
 #include "bzlib.h"
 
-#define ERROR_IF_EOF(i)       { if ((i) == EOF)  ioError(); }
-#define ERROR_IF_NOT_ZERO(i)  { if ((i) != 0)    ioError(); }
-#define ERROR_IF_MINUS_ONE(i) { if ((i) == (-1)) ioError(); }
+#define ERROR_IF_EOF(i)       { if ((i) == EOF)  _ioError(); }
+#define ERROR_IF_NOT_ZERO(i)  { if ((i) != 0)    _ioError(); }
+#define ERROR_IF_MINUS_ONE(i) { if ((i) == (-1)) _ioError(); }
 
 
 /*---------------------------------------------*/
@@ -73,7 +202,6 @@
 #   include <fcntl.h>
 #   include <sys/types.h>
 #   include <utime.h>
-#   include <unistd.h>
 #   include <sys/stat.h>
 #   include <sys/times.h>
 
@@ -178,55 +306,6 @@ typedef unsigned short  UInt16;
 --*/
 typedef int IntNative;
 
-
-/*---------------------------------------------------*/
-/*--- Misc (file handling) data decls             ---*/
-/*---------------------------------------------------*/
-
-Int32   verbosity;
-Bool    keepInputFiles, smallMode, deleteOutputOnInterrupt;
-Bool    forceOverwrite, testFailsExist, unzFailsExist, noisy;
-Int32   numFileNames, numFilesProcessed, blockSize100k;
-Int32   exitValue;
-
-/*-- source modes; F==file, I==stdin, O==stdout --*/
-#define SM_I2O           1
-#define SM_F2O           2
-#define SM_F2F           3
-
-/*-- operation modes --*/
-#define OM_Z             1
-#define OM_UNZ           2
-#define OM_TEST          3
-
-Int32   opMode;
-Int32   srcMode;
-
-#define FILE_NAME_LEN 1034
-
-Int32   longestFileName;
-Char    inName [FILE_NAME_LEN];
-Char    outName[FILE_NAME_LEN];
-Char    tmpName[FILE_NAME_LEN];
-Char    *progName;
-Char    progNameReally[FILE_NAME_LEN];
-FILE    *outputHandleJustInCase;
-Int32   workFactor;
-
-static void    panic                 ( const Char* ) NORETURN;
-static void    ioError               ( void )        NORETURN;
-static void    outOfMemory           ( void )        NORETURN;
-static void    configError           ( void )        NORETURN;
-static void    crcError              ( void )        NORETURN;
-static void    cleanUpAndFail        ( Int32 )       NORETURN;
-static void    compressedStreamEOF   ( void )        NORETURN;
-
-static void    copyFileName ( Char*, Char* );
-static void*   myMalloc     ( Int32 );
-static void    applySavedFileAttrToOutputFile ( IntNative fd );
-
-
-
 /*---------------------------------------------------*/
 /*--- An implementation of 64-bit ints.  Sigh.    ---*/
 /*--- Roll on widespread deployment of ANSI C9X ! ---*/
@@ -311,107 +390,115 @@ void uInt64_toAscii ( char* outbuf, UInt64* n )
       outbuf[i] = buf[nBuf-i-1];
 }
 
-/* Capability functions */
 
+// Globals that are const in the wrapped functions.
+static Int32   _blockSize100k;
+#define         blockSize100k (*(const Int32 *)&_blockSize100k)
+static Int32   _verbosity;
+#define         verbosity (*(const Int32 *)&_verbosity)
+static Bool    _smallMode;
+#define         smallMode (*(const Bool *)&_smallMode)
+static Bool    _forceOverwrite;
+#define         forceOverwrite (*(const Bool *)&_forceOverwrite)
+static Bool    _noisy;
+#define         noisy (*(const Bool *)&_noisy)
+static Int32   _workFactor;
+#define         workFactor (*(const Int32 *)&_workFactor)
+static Char *  _progName;
+#define         progName (*(const Char **)&_progName)
+#define FILE_NAME_LEN 1034
+static Char    _inName [FILE_NAME_LEN];
+#define         inName (*(const Char **)&_inName)
+
+/* Capabilities! AKA wrapped functions */
+
+static void _applySavedFileAttrToOutputFile( int fd );
 static
-Bool lc_available(void)
-{
-   static Bool known;
-   static Bool available;
-
-   if (!known) {
-      known = True;
-      cap_rights_t rights;
-      if (cap_getrights(0, &rights) == 0 || errno != ENOSYS)
-	 available = True;
-   }
-   return available;
+void wrapped_applySavedFileAttrToOutputFile( int fd ) {
+  if (lc_is_wrapped()) {
+    lc_send_to_parent("void", "applySavedFileAttrToOutputFile", "int", fd);
+    return;
+  }
+  _applySavedFileAttrToOutputFile( fd );
 }
 
+// We got lucky with this one - if the wrapped code did anything other than
+// clear the variable, we'd be in trouble.
+static void  _clear_outputHandleJustInCase(void);
 static
-void lc_closeallbut(const int *fds, const int nfds) {
-  struct rlimit rl;
-  int fd;
-  int n;
-
-  if (getrlimit(RLIMIT_NOFILE, &rl) < 0)
-    panic("Can't getrlimit");
-
-  for (fd = 0; fd < rl.rlim_max; ++fd) {
-    for (n = 0; n < nfds; ++n)
-      if (fds[n] == fd)
-	goto next;
-    if (close(fd) < 0 && errno != EBADF) {
-      perror("close");
-      panic("Can't close");
-    }
-  next:
-    continue;
+void wrapped_clear_outputHandleJustInCase(void) {
+  if (lc_is_wrapped()) {
+    lc_send_to_parent("void", "clear_outputHandleJustInCase", "void");
+    return;
   }
-}   
-
-static int
-lc_limitfd(int fd, cap_rights_t rights)
-{
-  int fd_cap;
-  int error;
-  
-  fd_cap = cap_new(fd, rights);
-  if (fd_cap < 0)
-    return (-1);
-  if (dup2(fd_cap, fd) < 0) {
-    error = errno;
-    close(fd_cap);
-    errno = error;
-    return (-1);
-  }
-  close(fd_cap);
-  return (0);
+  _clear_outputHandleJustInCase();
 }
 
-// FIXME: do this some other way, since we can't stop the child from
-// using our code.
-#define FILTER_EXIT  123
-static 
-Bool lc_wrap_filter(Bool (*func)(FILE *in, FILE *out), FILE *in, FILE *out) {
-  int ifd,  ofd, pid, status;
-
-  ifd = fileno(in);
-  ofd = fileno(out);
-
-  if((pid = fork()) < 0)
-    panic("Cannot fork");
-
-  if(pid != 0) {
-    /* Parent process */
-    wait(&status);
-    if(WIFEXITED(status)) {
-      status = WEXITSTATUS(status);
-      if (status != 0 && status != FILTER_EXIT)
-	panic("Unexpected child status");
-      return status == 0;
-    } else {
-      panic("Child exited abnormally");
-    }
-  } else { 
-    int fds[3];
-    /* Child process */
-    if(lc_limitfd(ifd, CAP_READ | CAP_SEEK) < 0
-       || lc_limitfd(ofd, CAP_WRITE | CAP_SEEK) < 0) {
-      panic("Cannot limit descriptors");
-    }
-    fds[0] = 2;
-    fds[1] = ofd;
-    fds[2] = ifd;
-    lc_closeallbut(fds, 3);
-    if((*func)(in, out) == True) {
-      exit(0);
-    } else {
-      exit(FILTER_EXIT);
-    }
-    /* NOTREACHED */
+static void _configError(void) NORETURN;
+static void wrapped_configError(void) NORETURN;
+static
+void wrapped_configError(void) {
+  if (lc_is_wrapped()) {
+    lc_send_to_parent("void", "configError", "void");
+    // Not expecting to get here, lc_send_to_parent() should get EOF
+    assert(0);
   }
-  /* NOTREACHED */
+  _configError();
+}
+
+static void _outOfMemory(void) NORETURN;
+static void wrapped_outOfMemory(void) NORETURN;
+static
+void wrapped_outOfMemory(void) {
+  if (lc_is_wrapped()) {
+    lc_send_to_parent("void", "outOfMemory", "void");
+    assert(0);
+  }
+  _outOfMemory();
+}
+
+static void _ioError(void) NORETURN;
+static void wrapped_ioError(void) NORETURN;
+static
+void wrapped_ioError(void) {
+  if (lc_is_wrapped()) {
+    lc_send_to_parent("void", "ioError", "void");
+    assert(0);
+  }
+  _ioError();
+}
+
+static void _crcError(void) NORETURN;
+static void wrapped_crcError(void) NORETURN;
+static
+void wrapped_crcError(void) {
+  if (lc_is_wrapped()) {
+    lc_send_to_parent("void", "crcError", "void");
+    assert(0);
+  }
+  _crcError();
+}
+
+static void _compressedStreamEOF(void) NORETURN;
+static void wrapped_compressedStreamEOF(void) NORETURN;
+static
+void wrapped_compressedStreamEOF(void) {
+  if (lc_is_wrapped()) {
+    lc_send_to_parent("void", "compressedStreamEOF", "void");
+    assert(0);
+  }
+  _compressedStreamEOF();
+}
+
+static void _panic(const char *msg) NORETURN;
+static void wrapped_panic(const char *msg) NORETURN;
+static
+void wrapped_panic(const char *msg) {
+  if (lc_is_wrapped()) {
+    lc_send_to_parent("void", "panic", "string", msg);
+    assert(0);
+  }
+  _panic(msg);
 }
 
 /*---------------------------------------------------*/
@@ -428,10 +515,9 @@ Bool myfeof ( FILE* f )
    return False;
 }
 
-
 /*---------------------------------------------*/
 static 
-Bool compressStream ( FILE *stream, FILE *zStream )
+int compressStream ( FILE *stream, FILE *zStream )
 {
    BZFILE* bzf = NULL;
    UChar   ibuf[5000];
@@ -452,8 +538,7 @@ Bool compressStream ( FILE *stream, FILE *zStream )
 
    // FIXME: Surely can do this earlier?
    if (lc_available() && cap_enter() < 0) {
-      perror("cap_enter");
-      panic("cap_enter() failed");
+     wrapped_panic("cap_enter() failed");
    }
 
    if (verbosity >= 2) fprintf ( stderr, "\n" );
@@ -479,14 +564,12 @@ Bool compressStream ( FILE *stream, FILE *zStream )
    if (zStream != stdout) {
       Int32 fd = fileno ( zStream );
       if (fd < 0) goto errhandler_io;
-      // In caps mode, this is done by the parent.
-      if (!lc_available())
-	 applySavedFileAttrToOutputFile( fd );
+      wrapped_applySavedFileAttrToOutputFile( fd );
       ret = fclose ( zStream );
-      outputHandleJustInCase = NULL;
+      wrapped_clear_outputHandleJustInCase();
       if (ret == EOF) goto errhandler_io;
    }
-   outputHandleJustInCase = NULL;
+   wrapped_clear_outputHandleJustInCase();
    if (ferror(stream)) goto errhandler_io;
    ret = fclose ( stream );
    if (ret == EOF) goto errhandler_io;
@@ -525,17 +608,17 @@ Bool compressStream ( FILE *stream, FILE *zStream )
                         &nbytes_out_lo32, &nbytes_out_hi32 );
    switch (bzerr) {
       case BZ_CONFIG_ERROR:
-         configError(); break;
+         wrapped_configError(); break;
       case BZ_MEM_ERROR:
-         outOfMemory (); break;
+	 wrapped_outOfMemory (); break;
       case BZ_IO_ERROR:
          errhandler_io:
-         ioError(); break;
+         wrapped_ioError(); break;
       default:
-         panic ( "compress:unexpected error" );
+         wrapped_panic ( "compress:unexpected error" );
    }
 
-   panic ( "compress:end" );
+   wrapped_panic ( "compress:end" );
    /*notreached*/
 }
 
@@ -546,20 +629,12 @@ compressStream_Host ( FILE *stream, FILE *zStream ) {
      return;
   }
 
-  Bool ret = lc_wrap_filter(compressStream, stream, zStream);
-  if (ret && zStream != stdout) {
-    Int32 fd = fileno ( zStream );
-    if (fd < 0)
-      panic ( "fileno" );
-    applySavedFileAttrToOutputFile ( fd );
-    if (fclose ( zStream ) < 0)
-      panic ( "fclose" );
-  }
+  lc_wrap_filter(compressStream, stream, zStream);
 }
 
 /*---------------------------------------------*/
 static 
-Bool uncompressStream ( FILE *zStream, FILE *stream )
+int uncompressStream ( FILE *zStream, FILE *stream )
 {
    BZFILE* bzf = NULL;
    Int32   bzerr, bzerr_dummy, ret, nread, streamNo, i;
@@ -579,13 +654,13 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
    if (ferror(zStream)) goto errhandler_io;
 
    if(lc_available() && cap_enter() < 0)
-     panic("cap_enter() failed");
+     wrapped_panic("cap_enter() failed");
 
    while (True) {
 
       bzf = BZ2_bzReadOpen ( 
                &bzerr, zStream, verbosity, 
-               (int)smallMode, unused, nUnused
+               smallMode, unused, nUnused
             );
       if (bzf == NULL || bzerr != BZ_OK) goto errhandler;
       streamNo++;
@@ -600,13 +675,13 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
       if (bzerr != BZ_STREAM_END) goto errhandler;
 
       BZ2_bzReadGetUnused ( &bzerr, bzf, &unusedTmpV, &nUnused );
-      if (bzerr != BZ_OK) panic ( "decompress:bzReadGetUnused" );
+      if (bzerr != BZ_OK) wrapped_panic ( "decompress:bzReadGetUnused" );
 
       unusedTmp = (UChar*)unusedTmpV;
       for (i = 0; i < nUnused; i++) unused[i] = unusedTmp[i];
 
       BZ2_bzReadClose ( &bzerr, bzf );
-      if (bzerr != BZ_OK) panic ( "decompress:bzReadGetUnused" );
+      if (bzerr != BZ_OK) wrapped_panic ( "decompress:bzReadGetUnused" );
 
       if (nUnused == 0 && myfeof(zStream)) break;
    }
@@ -616,9 +691,7 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
    if (stream != stdout) {
       Int32 fd = fileno ( stream );
       if (fd < 0) goto errhandler_io;
-      // In caps mode this is done in the parent.
-      if (!lc_available())
-	 applySavedFileAttrToOutputFile( fd );
+      wrapped_applySavedFileAttrToOutputFile( fd );
    }
    ret = fclose ( zStream );
    if (ret == EOF) goto errhandler_io;
@@ -628,10 +701,10 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
    if (ret != 0) goto errhandler_io;
    if (stream != stdout) {
       ret = fclose ( stream );
-      outputHandleJustInCase = NULL;
+      wrapped_clear_outputHandleJustInCase();
       if (ret == EOF) goto errhandler_io;
    }
-   outputHandleJustInCase = NULL;
+   wrapped_clear_outputHandleJustInCase();
    if (verbosity >= 2) fprintf ( stderr, "\n    " );
    return True;
 
@@ -652,16 +725,16 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
    BZ2_bzReadClose ( &bzerr_dummy, bzf );
    switch (bzerr) {
       case BZ_CONFIG_ERROR:
-         configError(); break;
+         wrapped_configError(); break;
       case BZ_IO_ERROR:
          errhandler_io:
-         ioError(); break;
+         wrapped_ioError(); break;
       case BZ_DATA_ERROR:
-         crcError();
+         wrapped_crcError();
       case BZ_MEM_ERROR:
-         outOfMemory();
+         wrapped_outOfMemory();
       case BZ_UNEXPECTED_EOF:
-         compressedStreamEOF();
+         wrapped_compressedStreamEOF();
       case BZ_DATA_ERROR_MAGIC:
          if (zStream != stdin) fclose(zStream);
          if (stream != stdout) fclose(stream);
@@ -675,10 +748,10 @@ Bool uncompressStream ( FILE *zStream, FILE *stream )
             return True;       
          }
       default:
-         panic ( "decompress:unexpected error" );
+         wrapped_panic ( "decompress:unexpected error" );
    }
 
-   panic ( "decompress:end" );
+   wrapped_panic ( "decompress:end" );
    return True; /*notreached*/
 }
 
@@ -687,19 +760,50 @@ Bool uncompressStream_Host ( FILE *zStream, FILE *stream ) {
   if (!lc_available())
      return uncompressStream( zStream, stream );
 
-  Bool ret = lc_wrap_filter ( uncompressStream, zStream, stream );
-  if (ret && stream != stdout) {
-    Int32 fd = fileno ( stream );
-    if (fd < 0)
-      panic ( "fileno" );
-    applySavedFileAttrToOutputFile ( fd );
-    if (fclose ( stream ) < 0)
-      panic ( "fclose" );
-  }
-  return ret;
+  return lc_wrap_filter ( uncompressStream, zStream, stream );
 }
 
+/* END OF WRAPPED CODE */
+
+/*-- source modes; F==file, I==stdin, O==stdout --*/
+#define SM_I2O           1
+#define SM_F2O           2
+#define SM_F2F           3
+
+/*-- operation modes --*/
+#define OM_Z             1
+#define OM_UNZ           2
+#define OM_TEST          3
+
+Int32   opMode;
+Int32   srcMode;
+
+Int32   longestFileName;
+Char    outName[FILE_NAME_LEN];
+Char    tmpName[FILE_NAME_LEN];
+Char    progNameReally[FILE_NAME_LEN];
+FILE    *outputHandleJustInCase;
+
+static void    cleanUpAndFail        ( Int32 )       NORETURN;
+
+static void    copyFileName ( Char*, Char* );
+static void*   myMalloc     ( Int32 );
+
+
+
+/*---------------------------------------------------*/
+/*--- Misc (file handling) data decls             ---*/
+/*---------------------------------------------------*/
+// THESE MUST COME AFTER THE WRAPPED FUNCTIONS. Wrapped functions only
+// have access via capabilities.
+
+static Bool    keepInputFiles, deleteOutputOnInterrupt;
+static Bool    testFailsExist, unzFailsExist;
+static Int32   numFileNames, numFilesProcessed;
+static Int32   exitValue;
+
 /*---------------------------------------------*/
+// FIXME: this should also be wrapped.
 static 
 Bool testStream ( FILE *zStream )
 {
@@ -721,7 +825,7 @@ Bool testStream ( FILE *zStream )
 
       bzf = BZ2_bzReadOpen ( 
                &bzerr, zStream, verbosity, 
-               (int)smallMode, unused, nUnused
+               smallMode, unused, nUnused
             );
       if (bzf == NULL || bzerr != BZ_OK) goto errhandler;
       streamNo++;
@@ -733,13 +837,13 @@ Bool testStream ( FILE *zStream )
       if (bzerr != BZ_STREAM_END) goto errhandler;
 
       BZ2_bzReadGetUnused ( &bzerr, bzf, &unusedTmpV, &nUnused );
-      if (bzerr != BZ_OK) panic ( "test:bzReadGetUnused" );
+      if (bzerr != BZ_OK) _panic ( "test:bzReadGetUnused" );
 
       unusedTmp = (UChar*)unusedTmpV;
       for (i = 0; i < nUnused; i++) unused[i] = unusedTmp[i];
 
       BZ2_bzReadClose ( &bzerr, bzf );
-      if (bzerr != BZ_OK) panic ( "test:bzReadGetUnused" );
+      if (bzerr != BZ_OK) _panic ( "test:bzReadGetUnused" );
       if (nUnused == 0 && myfeof(zStream)) break;
 
    }
@@ -757,16 +861,16 @@ Bool testStream ( FILE *zStream )
       fprintf ( stderr, "%s: %s: ", progName, inName );
    switch (bzerr) {
       case BZ_CONFIG_ERROR:
-         configError(); break;
+	 _configError(); break;
       case BZ_IO_ERROR:
          errhandler_io:
-         ioError(); break;
+         _ioError(); break;
       case BZ_DATA_ERROR:
          fprintf ( stderr,
                    "data integrity (CRC) error in data\n" );
          return False;
       case BZ_MEM_ERROR:
-         outOfMemory();
+         _outOfMemory();
       case BZ_UNEXPECTED_EOF:
          fprintf ( stderr,
                    "file ends unexpectedly\n" );
@@ -784,10 +888,10 @@ Bool testStream ( FILE *zStream )
             return True;       
          }
       default:
-         panic ( "test:unexpected error" );
+         _panic ( "test:unexpected error" );
    }
 
-   panic ( "test:end" );
+   _panic ( "test:end" );
    return True; /*notreached*/
 }
 
@@ -893,7 +997,7 @@ void cleanUpAndFail ( Int32 ec )
 
 /*---------------------------------------------*/
 static 
-void panic ( const Char* s )
+void _panic ( const Char* s )
 {
    fprintf ( stderr,
              "\n%s: PANIC -- internal consistency error:\n"
@@ -908,7 +1012,7 @@ void panic ( const Char* s )
 
 /*---------------------------------------------*/
 static 
-void crcError ( void )
+void _crcError ( void )
 {
    fprintf ( stderr,
              "\n%s: Data integrity error when decompressing.\n",
@@ -921,7 +1025,7 @@ void crcError ( void )
 
 /*---------------------------------------------*/
 static 
-void compressedStreamEOF ( void )
+void _compressedStreamEOF ( void )
 {
   if (noisy) {
     fprintf ( stderr,
@@ -938,7 +1042,7 @@ void compressedStreamEOF ( void )
 
 /*---------------------------------------------*/
 static 
-void ioError ( void )
+void _ioError ( void )
 {
    fprintf ( stderr,
              "\n%s: I/O or other error, bailing out.  "
@@ -1019,7 +1123,7 @@ void mySIGSEGVorSIGBUScatcher ( IntNative n )
 
 /*---------------------------------------------*/
 static 
-void outOfMemory ( void )
+void _outOfMemory ( void )
 {
    fprintf ( stderr,
              "\n%s: couldn't allocate enough memory\n",
@@ -1031,7 +1135,7 @@ void outOfMemory ( void )
 
 /*---------------------------------------------*/
 static 
-void configError ( void )
+void _configError ( void )
 {
    fprintf ( stderr,
              "bzip2: I'm not configured correctly for this platform!\n"
@@ -1212,7 +1316,7 @@ void applySavedTimeInfoToOutputFile ( Char *dstName )
 }
 
 static 
-void applySavedFileAttrToOutputFile ( IntNative fd )
+void _applySavedFileAttrToOutputFile ( IntNative fd )
 {
 #  if BZ_UNIX
    IntNative retVal;
@@ -1280,6 +1384,201 @@ Bool mapSuffix ( Char* name,
 
 /*---------------------------------------------*/
 static 
+void license ( void )
+{
+   fprintf ( stderr,
+
+    "bzip2, a block-sorting file compressor.  "
+    "Version %s.\n"
+    "   \n"
+    "   Copyright (C) 1996-2010 by Julian Seward.\n"
+    "   \n"
+    "   This program is free software; you can redistribute it and/or modify\n"
+    "   it under the terms set out in the LICENSE file, which is included\n"
+    "   in the bzip2-1.0.6 source distribution.\n"
+    "   \n"
+    "   This program is distributed in the hope that it will be useful,\n"
+    "   but WITHOUT ANY WARRANTY; without even the implied warranty of\n"
+    "   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n"
+    "   LICENSE file for more details.\n"
+    "   \n",
+    BZ2_bzlibVersion()
+   );
+}
+
+
+/*---------------------------------------------*/
+static 
+void usage ( const Char *fullProgName )
+{
+   fprintf (
+      stderr,
+      "bzip2, a block-sorting file compressor.  "
+      "Version %s.\n"
+      "\n   usage: %s [flags and input files in any order]\n"
+      "\n"
+      "   -h --help           print this message\n"
+      "   -d --decompress     force decompression\n"
+      "   -z --compress       force compression\n"
+      "   -k --keep           keep (don't delete) input files\n"
+      "   -f --force          overwrite existing output files\n"
+      "   -t --test           test compressed file integrity\n"
+      "   -c --stdout         output to standard out\n"
+      "   -q --quiet          suppress noncritical error messages\n"
+      "   -v --verbose        be verbose (a 2nd -v gives more)\n"
+      "   -L --license        display software version & license\n"
+      "   -V --version        display software version & license\n"
+      "   -s --small          use less memory (at most 2500k)\n"
+      "   -1 .. -9            set block size to 100k .. 900k\n"
+      "   --fast              alias for -1\n"
+      "   --best              alias for -9\n"
+      "\n"
+      "   If invoked as `bzip2', default action is to compress.\n"
+      "              as `bunzip2',  default action is to decompress.\n"
+      "              as `bzcat', default action is to decompress to stdout.\n"
+      "\n"
+      "   If no file names are given, bzip2 compresses or decompresses\n"
+      "   from standard input to standard output.  You can combine\n"
+      "   short flags, so `-v -4' means the same as -v4 or -4v, &c.\n"
+#     if BZ_UNIX
+      "\n"
+#     endif
+      ,
+
+      BZ2_bzlibVersion(),
+      fullProgName
+   );
+}
+
+
+/*---------------------------------------------*/
+static 
+void redundant ( Char* flag )
+{
+   fprintf ( 
+      stderr, 
+      "%s: %s is redundant in versions 0.9.5 and above\n",
+      progName, flag );
+}
+
+
+/*---------------------------------------------*/
+/*--
+  All the garbage from here to main() is purely to
+  implement a linked list of command-line arguments,
+  into which main() copies argv[1 .. argc-1].
+
+  The purpose of this exercise is to facilitate 
+  the expansion of wildcard characters * and ? in 
+  filenames for OSs which don't know how to do it
+  themselves, like MSDOS, Windows 95 and NT.
+
+  The actual Dirty Work is done by the platform-
+  specific macro APPEND_FILESPEC.
+--*/
+
+typedef
+   struct zzzz {
+      Char        *name;
+      struct zzzz *link;
+   }
+   Cell;
+
+
+/*---------------------------------------------*/
+static 
+void *myMalloc ( Int32 n )
+{
+   void* p;
+
+   p = malloc ( (size_t)n );
+   if (p == NULL) _outOfMemory ();
+   return p;
+}
+
+
+/*---------------------------------------------*/
+static 
+Cell *mkCell ( void )
+{
+   Cell *c;
+
+   c = (Cell*) myMalloc ( sizeof ( Cell ) );
+   c->name = NULL;
+   c->link = NULL;
+   return c;
+}
+
+
+/*---------------------------------------------*/
+static 
+Cell *snocString ( Cell *root, Char *name )
+{
+   if (root == NULL) {
+      Cell *tmp = mkCell();
+      tmp->name = (Char*) myMalloc ( 5 + strlen(name) );
+      strcpy ( tmp->name, name );
+      return tmp;
+   } else {
+      Cell *tmp = root;
+      while (tmp->link != NULL) tmp = tmp->link;
+      tmp->link = snocString ( tmp->link, name );
+      return root;
+   }
+}
+
+
+/*---------------------------------------------*/
+static 
+void addFlagsFromEnvVar ( Cell** argList, Char* varName ) 
+{
+   Int32 i, j, k;
+   Char *envbase, *p;
+
+   envbase = getenv(varName);
+   if (envbase != NULL) {
+      p = envbase;
+      i = 0;
+      while (True) {
+         if (p[i] == 0) break;
+         p += i;
+         i = 0;
+         while (isspace((Int32)(p[0]))) p++;
+         while (p[i] != 0 && !isspace((Int32)(p[i]))) i++;
+         if (i > 0) {
+            k = i; if (k > FILE_NAME_LEN-10) k = FILE_NAME_LEN-10;
+            for (j = 0; j < k; j++) tmpName[j] = p[j];
+            tmpName[k] = 0;
+            APPEND_FLAG(*argList, tmpName);
+         }
+      }
+   }
+}
+
+
+static
+void _clear_outputHandleJustInCase(void) {
+  outputHandleJustInCase = NULL;
+}
+
+// Make wrapped constants writable
+#undef smallMode
+#define smallMode _smallMode
+#undef forceOverwrite
+#define forceOverwrite _forceOverwrite
+#undef noisy
+#define noisy _noisy
+#undef verbosity
+#define verbosity _verbosity
+#undef blockSize100k
+#define blockSize100k _blockSize100k
+#undef inName
+#define inName _inName
+#undef workFactor
+#define workFactor _workFactor
+
+/*---------------------------------------------*/
+static 
 void compress ( Char *name )
 {
    FILE  *inStr;
@@ -1290,7 +1589,7 @@ void compress ( Char *name )
    deleteOutputOnInterrupt = False;
 
    if (name == NULL && srcMode != SM_I2O)
-      panic ( "compress: bad modes\n" );
+      _panic ( "compress: bad modes\n" );
 
    switch (srcMode) {
       case SM_I2O: 
@@ -1429,7 +1728,7 @@ void compress ( Char *name )
          break;
 
       default:
-         panic ( "compress: bad srcMode" );
+         _panic ( "compress: bad srcMode" );
          break;
    }
 
@@ -1473,7 +1772,7 @@ void uncompress ( Char *name )
    deleteOutputOnInterrupt = False;
 
    if (name == NULL && srcMode != SM_I2O)
-      panic ( "uncompress: bad modes\n" );
+      _panic ( "uncompress: bad modes\n" );
 
    cantGuess = False;
    switch (srcMode) {
@@ -1606,7 +1905,7 @@ void uncompress ( Char *name )
          break;
 
       default:
-         panic ( "uncompress: bad srcMode" );
+         _panic ( "uncompress: bad srcMode" );
          break;
    }
 
@@ -1668,7 +1967,7 @@ void testf ( Char *name )
    deleteOutputOnInterrupt = False;
 
    if (name == NULL && srcMode != SM_I2O)
-      panic ( "testf: bad modes\n" );
+      _panic ( "testf: bad modes\n" );
 
    copyFileName ( outName, (Char*)"(none)" );
    switch (srcMode) {
@@ -1727,7 +2026,7 @@ void testf ( Char *name )
          break;
 
       default:
-         panic ( "testf: bad srcMode" );
+         _panic ( "testf: bad srcMode" );
          break;
    }
 
@@ -1747,182 +2046,7 @@ void testf ( Char *name )
 
 
 /*---------------------------------------------*/
-static 
-void license ( void )
-{
-   fprintf ( stderr,
-
-    "bzip2, a block-sorting file compressor.  "
-    "Version %s.\n"
-    "   \n"
-    "   Copyright (C) 1996-2010 by Julian Seward.\n"
-    "   \n"
-    "   This program is free software; you can redistribute it and/or modify\n"
-    "   it under the terms set out in the LICENSE file, which is included\n"
-    "   in the bzip2-1.0.6 source distribution.\n"
-    "   \n"
-    "   This program is distributed in the hope that it will be useful,\n"
-    "   but WITHOUT ANY WARRANTY; without even the implied warranty of\n"
-    "   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n"
-    "   LICENSE file for more details.\n"
-    "   \n",
-    BZ2_bzlibVersion()
-   );
-}
-
-
-/*---------------------------------------------*/
-static 
-void usage ( Char *fullProgName )
-{
-   fprintf (
-      stderr,
-      "bzip2, a block-sorting file compressor.  "
-      "Version %s.\n"
-      "\n   usage: %s [flags and input files in any order]\n"
-      "\n"
-      "   -h --help           print this message\n"
-      "   -d --decompress     force decompression\n"
-      "   -z --compress       force compression\n"
-      "   -k --keep           keep (don't delete) input files\n"
-      "   -f --force          overwrite existing output files\n"
-      "   -t --test           test compressed file integrity\n"
-      "   -c --stdout         output to standard out\n"
-      "   -q --quiet          suppress noncritical error messages\n"
-      "   -v --verbose        be verbose (a 2nd -v gives more)\n"
-      "   -L --license        display software version & license\n"
-      "   -V --version        display software version & license\n"
-      "   -s --small          use less memory (at most 2500k)\n"
-      "   -1 .. -9            set block size to 100k .. 900k\n"
-      "   --fast              alias for -1\n"
-      "   --best              alias for -9\n"
-      "\n"
-      "   If invoked as `bzip2', default action is to compress.\n"
-      "              as `bunzip2',  default action is to decompress.\n"
-      "              as `bzcat', default action is to decompress to stdout.\n"
-      "\n"
-      "   If no file names are given, bzip2 compresses or decompresses\n"
-      "   from standard input to standard output.  You can combine\n"
-      "   short flags, so `-v -4' means the same as -v4 or -4v, &c.\n"
-#     if BZ_UNIX
-      "\n"
-#     endif
-      ,
-
-      BZ2_bzlibVersion(),
-      fullProgName
-   );
-}
-
-
-/*---------------------------------------------*/
-static 
-void redundant ( Char* flag )
-{
-   fprintf ( 
-      stderr, 
-      "%s: %s is redundant in versions 0.9.5 and above\n",
-      progName, flag );
-}
-
-
-/*---------------------------------------------*/
-/*--
-  All the garbage from here to main() is purely to
-  implement a linked list of command-line arguments,
-  into which main() copies argv[1 .. argc-1].
-
-  The purpose of this exercise is to facilitate 
-  the expansion of wildcard characters * and ? in 
-  filenames for OSs which don't know how to do it
-  themselves, like MSDOS, Windows 95 and NT.
-
-  The actual Dirty Work is done by the platform-
-  specific macro APPEND_FILESPEC.
---*/
-
-typedef
-   struct zzzz {
-      Char        *name;
-      struct zzzz *link;
-   }
-   Cell;
-
-
-/*---------------------------------------------*/
-static 
-void *myMalloc ( Int32 n )
-{
-   void* p;
-
-   p = malloc ( (size_t)n );
-   if (p == NULL) outOfMemory ();
-   return p;
-}
-
-
-/*---------------------------------------------*/
-static 
-Cell *mkCell ( void )
-{
-   Cell *c;
-
-   c = (Cell*) myMalloc ( sizeof ( Cell ) );
-   c->name = NULL;
-   c->link = NULL;
-   return c;
-}
-
-
-/*---------------------------------------------*/
-static 
-Cell *snocString ( Cell *root, Char *name )
-{
-   if (root == NULL) {
-      Cell *tmp = mkCell();
-      tmp->name = (Char*) myMalloc ( 5 + strlen(name) );
-      strcpy ( tmp->name, name );
-      return tmp;
-   } else {
-      Cell *tmp = root;
-      while (tmp->link != NULL) tmp = tmp->link;
-      tmp->link = snocString ( tmp->link, name );
-      return root;
-   }
-}
-
-
-/*---------------------------------------------*/
-static 
-void addFlagsFromEnvVar ( Cell** argList, Char* varName ) 
-{
-   Int32 i, j, k;
-   Char *envbase, *p;
-
-   envbase = getenv(varName);
-   if (envbase != NULL) {
-      p = envbase;
-      i = 0;
-      while (True) {
-         if (p[i] == 0) break;
-         p += i;
-         i = 0;
-         while (isspace((Int32)(p[0]))) p++;
-         while (p[i] != 0 && !isspace((Int32)(p[i]))) i++;
-         if (i > 0) {
-            k = i; if (k > FILE_NAME_LEN-10) k = FILE_NAME_LEN-10;
-            for (j = 0; j < k; j++) tmpName[j] = p[j];
-            tmpName[k] = 0;
-            APPEND_FLAG(*argList, tmpName);
-         }
-      }
-   }
-}
-
-
-/*---------------------------------------------*/
 #define ISFLAG(s) (strcmp(aa->name, (s))==0)
-
 IntNative main ( IntNative argc, Char *argv[] )
 {
    Int32  i, j;
@@ -1935,7 +2059,7 @@ IntNative main ( IntNative argc, Char *argv[] )
    if (sizeof(Int32) != 4 || sizeof(UInt32) != 4  ||
        sizeof(Int16) != 2 || sizeof(UInt16) != 2  ||
        sizeof(Char)  != 1 || sizeof(UChar)  != 1)
-      configError();
+      _configError();
 
    /*-- Initialise --*/
    outputHandleJustInCase  = NULL;
