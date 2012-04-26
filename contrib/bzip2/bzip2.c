@@ -267,6 +267,10 @@ int lc_wrap_filter(int (*func)(FILE *in, FILE *out), FILE *in, FILE *out,
     fds[2] = ifd;
     fds[3] = lc_parent_fd;
     lc_closeallbut(fds, 4);
+
+    if (lc_available() && cap_enter() < 0)
+      lc_panic("cap_enter() failed");
+
     if((*func)(in, out)) {
       exit(0);
     } else {
@@ -657,11 +661,6 @@ int compressStream ( FILE *stream, FILE *zStream )
                            blockSize100k, verbosity, workFactor );   
    if (bzerr != BZ_OK) goto errhandler;
 
-   // FIXME: Surely can do this earlier?
-   if (lc_available() && cap_enter() < 0) {
-     wrapped_panic("cap_enter() failed");
-   }
-
    if (verbosity >= 2) fprintf ( stderr, "\n" );
 
    while (True) {
@@ -794,9 +793,6 @@ int uncompressStream ( FILE *zStream, FILE *stream )
 
    if (ferror(stream)) goto errhandler_io;
    if (ferror(zStream)) goto errhandler_io;
-
-   if(lc_available() && cap_enter() < 0)
-     wrapped_panic("cap_enter() failed");
 
    while (True) {
 
