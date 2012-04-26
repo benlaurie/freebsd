@@ -683,6 +683,22 @@ static void*   myMalloc     ( Int32 );
 // THESE MUST COME AFTER THE WRAPPED FUNCTIONS. Wrapped functions only
 // have access via capabilities.
 
+// Make wrapped constants writable
+#undef inName
+#define inName _inName
+#undef smallMode
+#define smallMode _smallMode
+#undef forceOverwrite
+#define forceOverwrite _forceOverwrite
+#undef noisy
+#define noisy _noisy
+#undef verbosity
+#define verbosity _verbosity
+#undef blockSize100k
+#define blockSize100k _blockSize100k
+#undef workFactor
+#define workFactor _workFactor
+
 static Bool    keepInputFiles, deleteOutputOnInterrupt;
 static Bool    testFailsExist, unzFailsExist;
 static Int32   numFileNames, numFilesProcessed;
@@ -1268,200 +1284,11 @@ Bool mapSuffix ( Char* name,
 }
 
 
-/*---------------------------------------------*/
-static 
-void license ( void )
-{
-   fprintf ( stderr,
-
-    "bzip2, a block-sorting file compressor.  "
-    "Version %s.\n"
-    "   \n"
-    "   Copyright (C) 1996-2010 by Julian Seward.\n"
-    "   \n"
-    "   This program is free software; you can redistribute it and/or modify\n"
-    "   it under the terms set out in the LICENSE file, which is included\n"
-    "   in the bzip2-1.0.6 source distribution.\n"
-    "   \n"
-    "   This program is distributed in the hope that it will be useful,\n"
-    "   but WITHOUT ANY WARRANTY; without even the implied warranty of\n"
-    "   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n"
-    "   LICENSE file for more details.\n"
-    "   \n",
-    BZ2_bzlibVersion()
-   );
-}
-
-
-/*---------------------------------------------*/
-static 
-void usage ( const Char *fullProgName )
-{
-   fprintf (
-      stderr,
-      "bzip2, a block-sorting file compressor.  "
-      "Version %s.\n"
-      "\n   usage: %s [flags and input files in any order]\n"
-      "\n"
-      "   -h --help           print this message\n"
-      "   -d --decompress     force decompression\n"
-      "   -z --compress       force compression\n"
-      "   -k --keep           keep (don't delete) input files\n"
-      "   -f --force          overwrite existing output files\n"
-      "   -t --test           test compressed file integrity\n"
-      "   -c --stdout         output to standard out\n"
-      "   -q --quiet          suppress noncritical error messages\n"
-      "   -v --verbose        be verbose (a 2nd -v gives more)\n"
-      "   -L --license        display software version & license\n"
-      "   -V --version        display software version & license\n"
-      "   -s --small          use less memory (at most 2500k)\n"
-      "   -1 .. -9            set block size to 100k .. 900k\n"
-      "   --fast              alias for -1\n"
-      "   --best              alias for -9\n"
-      "\n"
-      "   If invoked as `bzip2', default action is to compress.\n"
-      "              as `bunzip2',  default action is to decompress.\n"
-      "              as `bzcat', default action is to decompress to stdout.\n"
-      "\n"
-      "   If no file names are given, bzip2 compresses or decompresses\n"
-      "   from standard input to standard output.  You can combine\n"
-      "   short flags, so `-v -4' means the same as -v4 or -4v, &c.\n"
-#     if BZ_UNIX
-      "\n"
-#     endif
-      ,
-
-      BZ2_bzlibVersion(),
-      fullProgName
-   );
-}
-
-
-/*---------------------------------------------*/
-static 
-void redundant ( Char* flag )
-{
-   fprintf ( 
-      stderr, 
-      "%s: %s is redundant in versions 0.9.5 and above\n",
-      progName, flag );
-}
-
-
-/*---------------------------------------------*/
-/*--
-  All the garbage from here to main() is purely to
-  implement a linked list of command-line arguments,
-  into which main() copies argv[1 .. argc-1].
-
-  The purpose of this exercise is to facilitate 
-  the expansion of wildcard characters * and ? in 
-  filenames for OSs which don't know how to do it
-  themselves, like MSDOS, Windows 95 and NT.
-
-  The actual Dirty Work is done by the platform-
-  specific macro APPEND_FILESPEC.
---*/
-
-typedef
-   struct zzzz {
-      Char        *name;
-      struct zzzz *link;
-   }
-   Cell;
-
-
-/*---------------------------------------------*/
-static 
-void *myMalloc ( Int32 n )
-{
-   void* p;
-
-   p = malloc ( (size_t)n );
-   if (p == NULL) _outOfMemory ();
-   return p;
-}
-
-
-/*---------------------------------------------*/
-static 
-Cell *mkCell ( void )
-{
-   Cell *c;
-
-   c = (Cell*) myMalloc ( sizeof ( Cell ) );
-   c->name = NULL;
-   c->link = NULL;
-   return c;
-}
-
-
-/*---------------------------------------------*/
-static 
-Cell *snocString ( Cell *root, Char *name )
-{
-   if (root == NULL) {
-      Cell *tmp = mkCell();
-      tmp->name = (Char*) myMalloc ( 5 + strlen(name) );
-      strcpy ( tmp->name, name );
-      return tmp;
-   } else {
-      Cell *tmp = root;
-      while (tmp->link != NULL) tmp = tmp->link;
-      tmp->link = snocString ( tmp->link, name );
-      return root;
-   }
-}
-
-
-/*---------------------------------------------*/
-static 
-void addFlagsFromEnvVar ( Cell** argList, Char* varName ) 
-{
-   Int32 i, j, k;
-   Char *envbase, *p;
-
-   envbase = getenv(varName);
-   if (envbase != NULL) {
-      p = envbase;
-      i = 0;
-      while (True) {
-         if (p[i] == 0) break;
-         p += i;
-         i = 0;
-         while (isspace((Int32)(p[0]))) p++;
-         while (p[i] != 0 && !isspace((Int32)(p[i]))) i++;
-         if (i > 0) {
-            k = i; if (k > FILE_NAME_LEN-10) k = FILE_NAME_LEN-10;
-            for (j = 0; j < k; j++) tmpName[j] = p[j];
-            tmpName[k] = 0;
-            APPEND_FLAG(*argList, tmpName);
-         }
-      }
-   }
-}
-
-
 static
 void _clear_outputHandleJustInCase(void) {
   outputHandleJustInCase = NULL;
 }
 
-// Make wrapped constants writable
-#undef smallMode
-#define smallMode _smallMode
-#undef forceOverwrite
-#define forceOverwrite _forceOverwrite
-#undef noisy
-#define noisy _noisy
-#undef verbosity
-#define verbosity _verbosity
-#undef blockSize100k
-#define blockSize100k _blockSize100k
-#undef inName
-#define inName _inName
-#undef workFactor
-#define workFactor _workFactor
 
 /*---------------------------------------------*/
 static 
@@ -1932,7 +1759,182 @@ void testf ( Char *name )
 
 
 /*---------------------------------------------*/
+static 
+void license ( void )
+{
+   fprintf ( stderr,
+
+    "bzip2, a block-sorting file compressor.  "
+    "Version %s.\n"
+    "   \n"
+    "   Copyright (C) 1996-2010 by Julian Seward.\n"
+    "   \n"
+    "   This program is free software; you can redistribute it and/or modify\n"
+    "   it under the terms set out in the LICENSE file, which is included\n"
+    "   in the bzip2-1.0.6 source distribution.\n"
+    "   \n"
+    "   This program is distributed in the hope that it will be useful,\n"
+    "   but WITHOUT ANY WARRANTY; without even the implied warranty of\n"
+    "   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n"
+    "   LICENSE file for more details.\n"
+    "   \n",
+    BZ2_bzlibVersion()
+   );
+}
+
+
+/*---------------------------------------------*/
+static 
+void usage ( const Char *fullProgName )
+{
+   fprintf (
+      stderr,
+      "bzip2, a block-sorting file compressor.  "
+      "Version %s.\n"
+      "\n   usage: %s [flags and input files in any order]\n"
+      "\n"
+      "   -h --help           print this message\n"
+      "   -d --decompress     force decompression\n"
+      "   -z --compress       force compression\n"
+      "   -k --keep           keep (don't delete) input files\n"
+      "   -f --force          overwrite existing output files\n"
+      "   -t --test           test compressed file integrity\n"
+      "   -c --stdout         output to standard out\n"
+      "   -q --quiet          suppress noncritical error messages\n"
+      "   -v --verbose        be verbose (a 2nd -v gives more)\n"
+      "   -L --license        display software version & license\n"
+      "   -V --version        display software version & license\n"
+      "   -s --small          use less memory (at most 2500k)\n"
+      "   -1 .. -9            set block size to 100k .. 900k\n"
+      "   --fast              alias for -1\n"
+      "   --best              alias for -9\n"
+      "\n"
+      "   If invoked as `bzip2', default action is to compress.\n"
+      "              as `bunzip2',  default action is to decompress.\n"
+      "              as `bzcat', default action is to decompress to stdout.\n"
+      "\n"
+      "   If no file names are given, bzip2 compresses or decompresses\n"
+      "   from standard input to standard output.  You can combine\n"
+      "   short flags, so `-v -4' means the same as -v4 or -4v, &c.\n"
+#     if BZ_UNIX
+      "\n"
+#     endif
+      ,
+
+      BZ2_bzlibVersion(),
+      fullProgName
+   );
+}
+
+
+/*---------------------------------------------*/
+static 
+void redundant ( Char* flag )
+{
+   fprintf ( 
+      stderr, 
+      "%s: %s is redundant in versions 0.9.5 and above\n",
+      progName, flag );
+}
+
+
+/*---------------------------------------------*/
+/*--
+  All the garbage from here to main() is purely to
+  implement a linked list of command-line arguments,
+  into which main() copies argv[1 .. argc-1].
+
+  The purpose of this exercise is to facilitate 
+  the expansion of wildcard characters * and ? in 
+  filenames for OSs which don't know how to do it
+  themselves, like MSDOS, Windows 95 and NT.
+
+  The actual Dirty Work is done by the platform-
+  specific macro APPEND_FILESPEC.
+--*/
+
+typedef
+   struct zzzz {
+      Char        *name;
+      struct zzzz *link;
+   }
+   Cell;
+
+
+/*---------------------------------------------*/
+static 
+void *myMalloc ( Int32 n )
+{
+   void* p;
+
+   p = malloc ( (size_t)n );
+   if (p == NULL) _outOfMemory ();
+   return p;
+}
+
+
+/*---------------------------------------------*/
+static 
+Cell *mkCell ( void )
+{
+   Cell *c;
+
+   c = (Cell*) myMalloc ( sizeof ( Cell ) );
+   c->name = NULL;
+   c->link = NULL;
+   return c;
+}
+
+
+/*---------------------------------------------*/
+static 
+Cell *snocString ( Cell *root, Char *name )
+{
+   if (root == NULL) {
+      Cell *tmp = mkCell();
+      tmp->name = (Char*) myMalloc ( 5 + strlen(name) );
+      strcpy ( tmp->name, name );
+      return tmp;
+   } else {
+      Cell *tmp = root;
+      while (tmp->link != NULL) tmp = tmp->link;
+      tmp->link = snocString ( tmp->link, name );
+      return root;
+   }
+}
+
+
+/*---------------------------------------------*/
+static 
+void addFlagsFromEnvVar ( Cell** argList, Char* varName ) 
+{
+   Int32 i, j, k;
+   Char *envbase, *p;
+
+   envbase = getenv(varName);
+   if (envbase != NULL) {
+      p = envbase;
+      i = 0;
+      while (True) {
+         if (p[i] == 0) break;
+         p += i;
+         i = 0;
+         while (isspace((Int32)(p[0]))) p++;
+         while (p[i] != 0 && !isspace((Int32)(p[i]))) i++;
+         if (i > 0) {
+            k = i; if (k > FILE_NAME_LEN-10) k = FILE_NAME_LEN-10;
+            for (j = 0; j < k; j++) tmpName[j] = p[j];
+            tmpName[k] = 0;
+            APPEND_FLAG(*argList, tmpName);
+         }
+      }
+   }
+}
+
+
+/*---------------------------------------------*/
 #define ISFLAG(s) (strcmp(aa->name, (s))==0)
+
 IntNative main ( IntNative argc, Char *argv[] )
 {
    Int32  i, j;
