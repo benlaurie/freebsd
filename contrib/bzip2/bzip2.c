@@ -898,6 +898,7 @@ Bool uncompressStream_Host ( FILE *zStream, FILE *stream ) {
   if (!lc_available())
      return uncompressStream( zStream, stream );
 
+  output_fd = fileno( stream );
   return lc_wrap_filter ( uncompressStream, zStream, stream, caps, 2 );
 }
 
