@@ -2,10 +2,8 @@
 
 int lc_available(void);
 
-void lc_send_to_parent(const char * const return_type,
-		       const char * const function,
-		       const char * const arg_types,
-		       ...);
+void lc_send_to_parent(const char *return_type, const char *function,
+		       const char *arg_types, ...);
 
 int lc_is_wrapped(void);
 
