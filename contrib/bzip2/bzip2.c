@@ -58,9 +58,9 @@
 #include "capsicum.h"
 #include <assert.h>
 
-#define ERROR_IF_EOF(i)       { if ((i) == EOF)  ioError(); }
-#define ERROR_IF_NOT_ZERO(i)  { if ((i) != 0)    ioError(); }
-#define ERROR_IF_MINUS_ONE(i) { if ((i) == (-1)) ioError(); }
+#define ERROR_IF_EOF(i)       { if ((i) == EOF)  wrapped_ioError(); }
+#define ERROR_IF_NOT_ZERO(i)  { if ((i) != 0)    wrapped_ioError(); }
+#define ERROR_IF_MINUS_ONE(i) { if ((i) == (-1)) wrapped_ioError(); }
 
 
 /*---------------------------------------------*/
@@ -87,12 +87,6 @@
 
 #   define APPEND_FLAG(root, name) \
       root=snocString((root), (name))
-
-#   ifdef __GNUC__
-#      define NORETURN __attribute__ ((noreturn))
-#   else
-#      define NORETURN /**/
-#   endif
 
 #   ifdef __DJGPP__
 #     include <io.h>
@@ -158,7 +152,6 @@
   Some more stuff for all platforms :-)
 --*/
 
-typedef char            Char;
 typedef short           Int16;
 typedef unsigned short  UInt16;
                                        
@@ -166,15 +159,23 @@ typedef unsigned short  UInt16;
 /*--- Misc (file handling) data decls             ---*/
 /*---------------------------------------------------*/
 
-Bool    keepInputFiles, smallMode, deleteOutputOnInterrupt;
-Bool    forceOverwrite, testFailsExist, unzFailsExist, noisy;
-Int32   numFileNames, numFilesProcessed;
-Int32   exitValue;
-
-#undef blockSize100k
-#define blockSize100k _blockSize100k
+#undef smallMode
+#define smallMode _smallMode
 #undef verbosity
 #define verbosity _verbosity
+#undef noisy
+#define noisy _noisy
+#undef forceOverwrite
+#define forceOverwrite _forceOverwrite
+#undef blockSize100k
+#define blockSize100k _blockSize100k
+
+Int32   verbosity;
+Bool    keepInputFiles, smallMode, deleteOutputOnInterrupt;
+Bool    forceOverwrite, testFailsExist, unzFailsExist, noisy;
+Int32   numFileNames, numFilesProcessed, blockSize100k;
+Int32   exitValue;
+
 
 /*-- source modes; F==file, I==stdin, O==stdout --*/
 #define SM_I2O           1
@@ -189,26 +190,27 @@ Int32   exitValue;
 Int32   opMode;
 Int32   srcMode;
 
-#define FILE_NAME_LEN 1034
-
 Int32   longestFileName;
+#undef inName
+#define inName _inName
 Char    inName [FILE_NAME_LEN];
 Char    outName[FILE_NAME_LEN];
 Char    tmpName[FILE_NAME_LEN];
+#undef progName
+#define progName _progName
 Char    *progName;
 Char    progNameReally[FILE_NAME_LEN];
 FILE    *outputHandleJustInCase;
 
+void wrapped_clear_outputHandleJustInCase(void) {
+  outputHandleJustInCase = NULL;
+}
+
 #undef workFactor
 #define workFactor _workFactor
+Int32   workFactor;
 
-static void    panic                 ( const Char* ) NORETURN;
-static void    ioError               ( void )        NORETURN;
-static void    outOfMemory           ( void )        NORETURN;
-static void    configError           ( void )        NORETURN;
-static void    crcError              ( void )        NORETURN;
 static void    cleanUpAndFail        ( Int32 )       NORETURN;
-static void    compressedStreamEOF   ( void )        NORETURN;
 
 static void    copyFileName ( Char*, Char* );
 static void*   myMalloc     ( Int32 );
@@ -360,8 +362,7 @@ void cleanUpAndFail ( Int32 ec )
 
 
 /*---------------------------------------------*/
-static 
-void panic ( const Char* s )
+void wrapped_panic ( const Char* s )
 {
    fprintf ( stderr,
              "\n%s: PANIC -- internal consistency error:\n"
@@ -375,8 +376,7 @@ void panic ( const Char* s )
 
 
 /*---------------------------------------------*/
-static 
-void crcError ( void )
+void wrapped_crcError ( void )
 {
    fprintf ( stderr,
              "\n%s: Data integrity error when decompressing.\n",
@@ -388,8 +388,7 @@ void crcError ( void )
 
 
 /*---------------------------------------------*/
-static 
-void compressedStreamEOF ( void )
+void wrapped_compressedStreamEOF ( void )
 {
   if (noisy) {
     fprintf ( stderr,
@@ -405,8 +404,7 @@ void compressedStreamEOF ( void )
 
 
 /*---------------------------------------------*/
-static 
-void ioError ( void )
+void wrapped_ioError ( void )
 {
    fprintf ( stderr,
              "\n%s: I/O or other error, bailing out.  "
@@ -486,8 +484,7 @@ void mySIGSEGVorSIGBUScatcher ( IntNative n )
 
 
 /*---------------------------------------------*/
-static 
-void outOfMemory ( void )
+void wrapped_outOfMemory ( void )
 {
    fprintf ( stderr,
              "\n%s: couldn't allocate enough memory\n",
@@ -498,8 +495,7 @@ void outOfMemory ( void )
 
 
 /*---------------------------------------------*/
-static 
-void configError ( void )
+void wrapped_configError ( void )
 {
    fprintf ( stderr,
              "bzip2: I'm not configured correctly for this platform!\n"
@@ -679,8 +675,7 @@ void applySavedTimeInfoToOutputFile ( Char *dstName )
 #  endif
 }
 
-static 
-void applySavedFileAttrToOutputFile ( IntNative fd )
+void wrapped_applySavedFileAttrToOutputFile ( IntNative fd )
 {
 #  if BZ_UNIX
    IntNative retVal;
@@ -700,7 +695,7 @@ static void unwrap_applySavedFileAttrToOutputFile(int fd) {
 
   lc_read_int(fd, &ofd);
   assert(ofd == output_fd);
-  applySavedFileAttrToOutputFile(ofd);
+  wrapped_applySavedFileAttrToOutputFile(ofd);
   lc_write_void(fd);
 }
 
@@ -766,7 +761,7 @@ void compress ( Char *name )
    deleteOutputOnInterrupt = False;
 
    if (name == NULL && srcMode != SM_I2O)
-      panic ( "compress: bad modes\n" );
+      wrapped_panic ( "compress: bad modes\n" );
 
    switch (srcMode) {
       case SM_I2O: 
@@ -905,7 +900,7 @@ void compress ( Char *name )
          break;
 
       default:
-         panic ( "compress: bad srcMode" );
+         wrapped_panic ( "compress: bad srcMode" );
          break;
    }
 
@@ -949,7 +944,7 @@ void uncompress ( Char *name )
    deleteOutputOnInterrupt = False;
 
    if (name == NULL && srcMode != SM_I2O)
-      panic ( "uncompress: bad modes\n" );
+      wrapped_panic ( "uncompress: bad modes\n" );
 
    cantGuess = False;
    switch (srcMode) {
@@ -1082,7 +1077,7 @@ void uncompress ( Char *name )
          break;
 
       default:
-         panic ( "uncompress: bad srcMode" );
+         wrapped_panic ( "uncompress: bad srcMode" );
          break;
    }
 
@@ -1144,7 +1139,7 @@ void testf ( Char *name )
    deleteOutputOnInterrupt = False;
 
    if (name == NULL && srcMode != SM_I2O)
-      panic ( "testf: bad modes\n" );
+      wrapped_panic ( "testf: bad modes\n" );
 
    copyFileName ( outName, (Char*)"(none)" );
    switch (srcMode) {
@@ -1203,7 +1198,7 @@ void testf ( Char *name )
          break;
 
       default:
-         panic ( "testf: bad srcMode" );
+         wrapped_panic ( "testf: bad srcMode" );
          break;
    }
 
@@ -1332,7 +1327,7 @@ void *myMalloc ( Int32 n )
    void* p;
 
    p = malloc ( (size_t)n );
-   if (p == NULL) outOfMemory ();
+   if (p == NULL) wrapped_outOfMemory ();
    return p;
 }
 
@@ -1411,7 +1406,7 @@ IntNative main ( IntNative argc, Char *argv[] )
    if (sizeof(Int32) != 4 || sizeof(UInt32) != 4  ||
        sizeof(Int16) != 2 || sizeof(UInt16) != 2  ||
        sizeof(Char)  != 1 || sizeof(UChar)  != 1)
-      configError();
+      wrapped_configError();
 
    /*-- Initialise --*/
    outputHandleJustInCase  = NULL;
