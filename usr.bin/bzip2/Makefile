@@ -6,6 +6,8 @@ BZ2DIR=	${.CURDIR}/../../contrib/bzip2
 PROG=	bzip2
 CFLAGS+= -D_FILE_OFFSET_BITS=64
 
+SRCS= capsicum.c bzip2_wrapped.c bzip2.c
+
 WARNS?=	3
 
 DPADD=	${LIBBZ2}
