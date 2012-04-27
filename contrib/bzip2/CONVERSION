@@ -100,3 +100,5 @@
     We need to add unwrappers and capabilities for all the functions
     we wrapped earlier. Luckily, there's a list in bzip2_wrapped.h, so
     we'll just haul those in and get back on track with errors.
+
+13. Oops. Unwrappers take an fd...
