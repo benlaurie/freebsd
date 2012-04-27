@@ -173,7 +173,6 @@ typedef int IntNative;
 /*--- Misc (file handling) data decls             ---*/
 /*---------------------------------------------------*/
 
-Int32   verbosity;
 Bool    keepInputFiles, smallMode, deleteOutputOnInterrupt;
 Bool    forceOverwrite, testFailsExist, unzFailsExist, noisy;
 Int32   numFileNames, numFilesProcessed;
@@ -181,6 +180,8 @@ Int32   exitValue;
 
 #undef blockSize100k
 #define blockSize100k _blockSize100k
+#undef verbosity
+#define verbosity _verbosity
 
 /*-- source modes; F==file, I==stdin, O==stdout --*/
 #define SM_I2O           1
@@ -204,7 +205,9 @@ Char    tmpName[FILE_NAME_LEN];
 Char    *progName;
 Char    progNameReally[FILE_NAME_LEN];
 FILE    *outputHandleJustInCase;
-Int32   workFactor;
+
+#undef workFactor
+#define workFactor _workFactor
 
 static void    panic                 ( const Char* ) NORETURN;
 static void    ioError               ( void )        NORETURN;
