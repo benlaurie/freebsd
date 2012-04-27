@@ -102,3 +102,11 @@
     we'll just haul those in and get back on track with errors.
 
 13. Oops. Unwrappers take an fd...
+
+14. Define the unwrappers. Note that you have to remember to add them
+    to caps[] and adjust the calls where it is used. Again, an IDL
+    would fix this.
+
+    Now we're done.
+
+
