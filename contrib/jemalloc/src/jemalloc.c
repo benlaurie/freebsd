@@ -8,7 +8,8 @@ malloc_tsd_data(, arenas, arena_t *, NULL)
 malloc_tsd_data(, thread_allocated, thread_allocated_t,
     THREAD_ALLOCATED_INITIALIZER)
 
-const char	*__malloc_options_1_0;
+/* Work around <http://llvm.org/bugs/show_bug.cgi?id=12623>: */
+const char	*__malloc_options_1_0 = NULL;
 __sym_compat(_malloc_options, __malloc_options_1_0, FBSD_1.0);
 
 /* Runtime configuration options. */
@@ -638,7 +639,7 @@ malloc_init_hard(void)
 		return (true);
 	}
 
-	if (chunk_boot0()) {
+	if (chunk_boot()) {
 		malloc_mutex_unlock(&init_lock);
 		return (true);
 	}
@@ -714,11 +715,6 @@ malloc_init_hard(void)
 	malloc_mutex_unlock(&init_lock);
 	ncpus = malloc_ncpus();
 	malloc_mutex_lock(&init_lock);
-
-	if (chunk_boot1()) {
-		malloc_mutex_unlock(&init_lock);
-		return (true);
-	}
 
 	if (mutex_boot()) {
 		malloc_mutex_unlock(&init_lock);

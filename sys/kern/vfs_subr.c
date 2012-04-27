@@ -1327,8 +1327,7 @@ flushbuflist(struct bufv *bufv, int flags, struct bufobj *bo, int slpflag,
  * sync activity.
  */
 int
-vtruncbuf(struct vnode *vp, struct ucred *cred, struct thread *td,
-    off_t length, int blksize)
+vtruncbuf(struct vnode *vp, struct ucred *cred, off_t length, int blksize)
 {
 	struct buf *bp, *nbp;
 	int anyfreed;
@@ -2660,7 +2659,7 @@ loop:
  * Recycle an unused vnode to the front of the free list.
  */
 int
-vrecycle(struct vnode *vp, struct thread *td)
+vrecycle(struct vnode *vp)
 {
 	int recycled;
 

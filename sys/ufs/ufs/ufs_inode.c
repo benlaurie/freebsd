@@ -73,7 +73,6 @@ ufs_inactive(ap)
 {
 	struct vnode *vp = ap->a_vp;
 	struct inode *ip = VTOI(vp);
-	struct thread *td = ap->a_td;
 	mode_t mode;
 	int error = 0;
 	off_t isize;
@@ -129,15 +128,14 @@ ufs_inactive(ap)
 	if (ip->i_ump->um_fstype == UFS2)
 		isize += ip->i_din2->di_extsize;
 	if (ip->i_effnlink <= 0 && isize && !UFS_RDONLY(ip))
-		error = UFS_TRUNCATE(vp, (off_t)0, IO_EXT | IO_NORMAL,
-		    NOCRED, td);
+		error = UFS_TRUNCATE(vp, (off_t)0, IO_EXT | IO_NORMAL, NOCRED);
 	if (ip->i_nlink <= 0 && ip->i_mode && !UFS_RDONLY(ip)) {
 #ifdef QUOTA
 		if (!getinoquota(ip))
 			(void)chkiq(ip, -1, NOCRED, FORCE);
 #endif
 #ifdef UFS_EXTATTR
-		ufs_extattr_vnode_inactive(vp, td);
+		ufs_extattr_vnode_inactive(vp, ap->a_td);
 #endif
 		/*
 		 * Setting the mode to zero needs to wait for the inode
@@ -173,7 +171,7 @@ out:
 	 * so that it can be reused immediately.
 	 */
 	if (ip->i_mode == 0)
-		vrecycle(vp, td);
+		vrecycle(vp);
 	if (mp != NULL)
 		vn_finished_secondary_write(mp);
 	return (error);
