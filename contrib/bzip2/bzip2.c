@@ -55,6 +55,8 @@
 #include <ctype.h>
 #include "bzlib.h"
 #include "bzip2_wrapped.h"
+#include "capsicum.h"
+#include <assert.h>
 
 #define ERROR_IF_EOF(i)       { if ((i) == EOF)  ioError(); }
 #define ERROR_IF_NOT_ZERO(i)  { if ((i) != 0)    ioError(); }
@@ -757,6 +759,16 @@ void applySavedFileAttrToOutputFile ( IntNative fd )
 #  endif
 }
 
+static int output_fd;
+
+static void unwrap_applySavedFileAttrToOutputFile(int fd) {
+  int ofd;
+
+  lc_read_int(fd, &ofd);
+  assert(ofd == output_fd);
+  applySavedFileAttrToOutputFile(ofd);
+  lc_write_void(fd);
+}
 
 /*---------------------------------------------*/
 static 
