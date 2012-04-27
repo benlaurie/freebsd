@@ -176,8 +176,11 @@ typedef int IntNative;
 Int32   verbosity;
 Bool    keepInputFiles, smallMode, deleteOutputOnInterrupt;
 Bool    forceOverwrite, testFailsExist, unzFailsExist, noisy;
-Int32   numFileNames, numFilesProcessed, blockSize100k;
+Int32   numFileNames, numFilesProcessed;
 Int32   exitValue;
+
+#undef blockSize100k
+#define blockSize100k _blockSize100k
 
 /*-- source modes; F==file, I==stdin, O==stdout --*/
 #define SM_I2O           1
